@@ -1,0 +1,7 @@
+# ink — Minimal external dependencies.
+# All core engines are heuristic-based (stdlib + standard data files).
+# Python >= 3.8
+
+# System Requirements:
+# - Pandoc (required for document processing and final formatting)
+#   Installation: brew install pandoc (macOS), apt install pandoc (Linux)
