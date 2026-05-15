@@ -1,6 +1,8 @@
 # ink — Stealth Text Fuzzer
 **Codename**: `break_the_wallv1`
 
+> use this responsibly, the primary objective of creating this tool is for educational and adversarial test toward AI detection, I deny responsibility for bad use of this tool.
+
 A modular, CLI-first tool for adversarial linguistic perturbation of AI-generated text.
 Designed to be pipe-friendly, like `pandoc`. No internet. No models. No GPU.
 
