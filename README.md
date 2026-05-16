@@ -1,120 +1,109 @@
 # ink — Stealth Text Fuzzer
 **Codename**: `break_the_wallv1`
 
-> use this responsibly, the primary objective of creating this tool is for educational and adversarial test toward AI detection, I deny responsibility for bad use of this tool.
+> **Warning**: Use this tool responsibly. The primary objective is educational research into adversarial linguistics. The author denies responsibility for any misuse of this tool.
 
-A modular, CLI-first tool for adversarial linguistic perturbation of AI-generated text.
-Designed to be pipe-friendly, like `pandoc`. No internet. No models. No GPU.
+`ink` is a modular, CLI-first tool designed for adversarial linguistic perturbation of AI-generated text. It uses a multi-layered heuristic approach to inject "human-like" variance into flat, robotic text blocks.
+
+Designed to be pipe-friendly and lightweight, like `pandoc`.
 
 ---
 
-## Install
+## Installation
 
+`ink` is designed to be zero-dependency at its core, but offers an advanced NLTK-powered analysis mode.
+
+### 1. Basic (Zero-Dependency)
 ```bash
-git clone <repo>
+git clone <repo-url>
 cd break_the_wallv1
-# No dependencies. Requires Python >= 3.8 only.
-python3 ink.py --help
+pip install .
 ```
+
+### 2. Advanced (with NLTK support)
+Required for the `--deep` analysis mode.
+```bash
+pip install .[deep]
+```
+
+### System Requirements
+- **Python**: 3.8+
+- **Pandoc**: (Optional but recommended) Required for handling complex document formats.
+  - macOS: `brew install pandoc`
+  - Linux: `sudo apt install pandoc`
 
 ---
 
 ## Usage
 
-### Interactive Mode (Option A — default)
-Presents each proposed change one at a time. You decide.
+### 1. Interactive Mode (Default)
+Presents each proposed change one at a time. This is the highest quality mode because you (the human) validate every change.
 
 ```bash
-# From a file
-python3 ink.py -i draft.md --passes burst,syn,voice
+# Process a file
+ink -i manuscript.md --passes burst,syn,voice
 
 # From stdin (pipe-friendly)
-cat draft.md | python3 ink.py --passes syn,voice > output.md
+cat draft.md | ink --passes syn,voice > output.md
 
-# With a fixed seed (reproducible run)
-python3 ink.py -i draft.md --seed 42
+# With a word limit (split into 2000-word chunks)
+ink -i huge_draft.md --limit 2000
 ```
 
-**Interactive Controls:**
-- `A` — Apply the proposed change
-- `S` — Skip (this word/sentence won't be proposed again in this session)
-- `R` — Retry (propose a different synonym or conjunction)
+**Controls:**
+- `A` — Apply change
+- `S` — Skip (saved to session state)
+- `R` — Retry (pull a different variation from the RNG)
 - `Q` — Quit and save progress
 
----
-
-### Analyze Only (Pre-flight)
-Print an AI risk report without making any changes.
+### 2. Advanced Analysis (`--deep`)
+Uses NLTK to perform statistical deep-dives into your text.
 
 ```bash
-python3 ink.py -i draft.md --analyze
+ink -i draft.md --deep
 ```
 
-**Output includes:**
-- `Verdict` — HIGH / MEDIUM / LOW / CLEAN
-- `Burstiness` — How uniform your sentence lengths are (low = AI-like)
-- `High-Prob Words` — AI-typical words detected
-- `GPT Connectors` — Overused transitional phrases detected
-- `Hotspots` — Top 3 most AI-like sentences
+**Detects:**
+- **Lexical Diversity**: Type-Token Ratio (TTR) using lemma-based analysis.
+- **N-Gram Perplexity**: Highlights sentences using high-probability "AI Trigrams."
+- **Grammatical Context**: Pinpoints exact locations for hedge injection via POS tagging.
 
----
-
-### Batch Mode (Option B)
-Generate N variants automatically. Each uses a different seed.
+### 3. Batch Mode (`--batch`)
+Generate multiple variants automatically using different random seeds.
 
 ```bash
-python3 ink.py -i draft.md --batch --count 5
+ink -i draft.md --batch --count 5
 ```
-
-**Output:**
-```
-draft_v1_entropy_minimal.md
-draft_v2_entropy_low.md
-draft_v3_entropy_med.md
-draft_v4_entropy_high.md
-draft_v5_entropy_max.md
-```
-
-Upload each to your detector manually. Use the one that passes.
 
 ---
 
-## Passes
+## Privacy & Stealth
 
-| Pass | Flag | Description |
-|:-----|:-----|:------------|
-| Burstiness | `burst` | Merges short uniform sentences; splits long ones. Breaks rhythmic flatness. |
-| Synonym Swap | `syn` | Replaces high-probability AI words with lower-probability synonyms. POS-safe. |
-| Voice Inject | `voice` | Adds hedges, parentheticals, non-sequiturs, and human-style openers. |
+`ink` is built for security researchers and sensitive data.
 
-**Canonical Pass Order**: `burst` → `syn` → `voice` (always enforced).
+- **Offline-First**: All core heuristics run locally. No data is sent to an API.
+- **Ephemeral Mode**: Run without leaving any session logs or JSON state files on your disk.
+  ```bash
+  ink -i secret.md --ephemeral
+  ```
+- **Purge Utility**: Completely remove all downloaded NLTK data models (~40MB) from your machine.
+  ```bash
+  ink --purge
+  ```
+- **State Wiping**: Reset the session state for a specific file.
+  ```bash
+  ink -i draft.md --clear-state
+  ```
 
 ---
 
-## Targets
+## The Engine Layers
 
-| Flag | Description |
-|:-----|:------------|
-| `--target hardened` | For Turnitin/GPTZero. Disables Unicode glitch passes. |
-| `--target simple` | For lightweight detectors. Allows all passes. |
-
----
-
-## State Management
-
-`ink` tracks session state in a hash-scoped file:
-```
-state/.ink_state_<filename>_<hash>.json
-```
-
-- Prevents the same word from being proposed twice.
-- Tracks which passes have been applied.
-- Survives crashes — resume mid-session.
-
-**Clear state for a fresh start:**
-```bash
-python3 ink.py -i draft.md --clear-state
-```
+| Pass | Flag | Layer | Description |
+|:-----|:-----|:---:|:------------|
+| **Burstiness** | `burst` | 2 | Injects sentence length variance. Merges flat sentences, splits monotonous ones. |
+| **Synonym Swap** | `syn` | 3 | Replaces "High-Prob" AI words with low-prob synonyms. |
+| **Voice Inject** | `voice` | 4 | Injects disfluencies, hedges, and personal openers into robotic sections. |
 
 ---
 
@@ -122,34 +111,21 @@ python3 ink.py -i draft.md --clear-state
 
 ```
 break_the_wallv1/
-├── ink.py              # Main CLI entry point
+├── ink.py              # Main CLI & Interactive Loop
 ├── engine/
-│   ├── analyzer.py     # Layer 1: Heuristic heatmap (burstiness + high-prob words)
-│   ├── burst.py        # Layer 2: Sentence length variance injector
-│   ├── syn_fuzz.py     # Layer 3: Synonym fuzzer (POS-safe)
-│   ├── voice.py        # Layer 4: Disfluency & hedge injector
-│   └── state.py        # State manager
-├── data/
-│   ├── high_prob_words.json   # AI-typical word → synonym mappings
-│   └── voice_templates.json  # Hedges, parentheticals, bridges
-└── state/              # Auto-generated session state files
+│   ├── analyzer.py     # Heuristic Heatmap (Standard)
+│   ├── deep_analyze.py # NLTK-powered Statistical Engine (Advanced)
+│   ├── burst.py        # Burstiness & Variance Engine
+│   ├── syn_fuzz.py     # Synonym & POS-safe Swaps
+│   └── voice.py        # Contextual Hedge & Voice Injection
+└── data/               # Curated adversarial linguistic data
 ```
 
 ---
 
-## Design Decisions
+## Design Philosophy
 
-- **No LLMs, No Models**: 100% heuristic. Under 5MB total. Runs offline.
-- **Stochastic**: Every run uses a random seed. No two outputs are identical.
-- **POS-Safe Swaps**: Only `Adjective→Adjective`, `Noun→Noun`. Text stays readable.
-- **Semantic Anchor**: Synonyms are drawn from curated lists, not a thesaurus, to prevent "meaning drift."
-- **Human-in-the-Loop**: The interactive mode ensures a human validates every change before it lands in the final document.
-
----
-
-## Known Limitations
-
-1. **Proxy Score Problem**: `ink` has no local scoring engine. You must check the output manually against a real detector (GPTZero, Turnitin, etc.).
-2. **Batch Mode is Dumb**: Batch mode applies changes blindly without context. Interactive mode is always higher quality.
-3. **No PDF/DOCX support (yet)**: Works on `.txt` and `.md` only. Use `pandoc` to convert first.
-4. **Voice Injection is Template-Based**: The hedges and openers come from a fixed list. A motivated adversary who knows the list could spot them.
+- **No Models, No GPU**: 100% heuristic. Fast, light, and private.
+- **Stochastic Entropy**: Every run is unique due to the seed-based RNG.
+- **Semantic Anchor**: We use curated synonyms, not a blind thesaurus, to prevent "meaning drift."
+- **Human-in-the-Loop**: The tool works *with* you, not instead of you.
