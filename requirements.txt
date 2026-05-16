@@ -1,7 +1,19 @@
-# ink — Minimal external dependencies.
-# All core engines are heuristic-based (stdlib + standard data files).
-# Python >= 3.8
-
+# ink — Dependency manifest
+# Core engine is zero-dependency (stdlib + JSON data files). Python >= 3.8
+#
 # System Requirements:
-# - Pandoc (required for document processing and final formatting)
-#   Installation: brew install pandoc (macOS), apt install pandoc (Linux)
+# - Pandoc (required for document conversion and final formatting)
+#   macOS:  brew install pandoc
+#   Linux:  apt install pandoc
+
+# ── Optional: Deep Analysis Mode (--deep flag) ──────────────────────────────
+# Required only if you intend to use `ink --deep` for advanced AI detection.
+# The tool will offer to install these automatically on first use.
+#
+# nltk>=3.8
+#
+# NLTK also requires one-time data package downloads (~40MB):
+#   python -c "import nltk; nltk.download('punkt'); nltk.download('wordnet'); nltk.download('averaged_perceptron_tagger')"
+#
+# To remove all downloaded NLTK data from your machine, run:
+#   ink --purge

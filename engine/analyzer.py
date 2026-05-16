@@ -38,18 +38,24 @@ for category in _HIGH_PROB.values():
 def split_sentences(text: str) -> List[Tuple[str, str]]:
     """
     Split text into a list of (text, delimiter) tuples.
-    This allows perfect reconstruction of the original document structure.
+    Ensures that paragraph breaks (double newlines) are treated as delimiters
+    so that sentences aren't accidentally merged across paragraphs.
     """
-    # Split while capturing the delimiters (whitespace/newlines after punctuation)
-    pattern = r'((?<=[.!?])\s+)'
+    # Split at punctuation followed by whitespace OR at double newlines
+    # Using a capture group ensures we keep the delimiters
+    pattern = r'((?:(?<=[.!?])\s+)|(?:\n\n+))'
     parts = re.split(pattern, text)
     
     # parts will be [sent1, delim1, sent2, delim2, ..., sentN]
     res = []
     for i in range(0, len(parts) - 1, 2):
-        res.append((parts[i], parts[i+1]))
+        if parts[i] or parts[i+1]:
+            res.append((parts[i], parts[i+1]))
+    
     if len(parts) % 2 == 1:
-        res.append((parts[-1], ""))
+        if parts[-1]:
+            res.append((parts[-1], ""))
+            
     return res
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,96 +82,63 @@ def burstiness_score(sentences: List[Tuple[str, str]]) -> float:
 # High-Probability Word Count
 # ─────────────────────────────────────────────────────────────────────────────
 
-def count_high_prob_words(text: str) -> Tuple[int, List[str]]:
-    """
-    Returns (count, list_of_found_words).
-    Counts how many "AI-typical" high-probability words appear in the text.
-    """
-    words = re.findall(r'\b[a-zA-Z]+\b', text.lower())
-    found = [w for w in words if w in _HIGH_PROB_FLAT]
-    return len(found), list(set(found))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Connector / GPT-ism detection
-# ─────────────────────────────────────────────────────────────────────────────
-
-def detect_gpt_connectors(text: str) -> List[str]:
-    """
-    Detects overused GPT-style transitional phrases.
-    Returns list of matches found.
-    """
-    connectors = list(_HIGH_PROB.get("connectors", {}).keys())
-    found = []
-    for c in connectors:
-        if c and c.lower() in text.lower():
-            found.append(c)
-    return found
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sentence-level AI likelihood (heuristic hotspot finder)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def sentence_hotspots(sentences: List[Tuple[str, str]], top_n: int = 5) -> List[Tuple[int, float, str]]:
-    """
-    Returns top_n sentences most likely to be "AI-generated"
-    """
-    lengths = [len(s[0].split()) for s in sentences]
-    mean_len = sum(lengths) / max(len(lengths), 1)
-
-    scored = []
-    for i, (sent, _) in enumerate(sentences):
-        word_count = lengths[i]
-        hp_count, _ = count_high_prob_words(sent)
-        hp_density = hp_count / max(word_count, 1)
-
-        # Length conformity penalty (more uniform = more AI-like)
-        conformity = 1.0 - min(abs(word_count - mean_len) / max(mean_len, 1), 1.0)
-
-        # Combined heuristic score
-        score = (hp_density * 0.6) + (conformity * 0.4)
-        scored.append((i, round(score, 4), sent))
-
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:top_n]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Public API: Full Analysis Report
-# ─────────────────────────────────────────────────────────────────────────────
-
 def analyze(text: str) -> Dict:
     """
-    Full analysis of input text.
+    Runs Layer 1 analysis on the text.
     """
     sentences = split_sentences(text)
+    
+    total_words = 0
+    high_prob_count = 0
+    high_prob_found = []
+    gpt_connectors_found = []
+    
+    # Check for overused "GPT" connectors
+    for conn in _HIGH_PROB.get("connectors", {}).keys():
+        if conn.lower() in text.lower():
+            gpt_connectors_found.append(conn)
+
+    sentence_stats = []
+    for i, (sent, delim) in enumerate(sentences):
+        words = sent.split()
+        if not words:
+            continue
+        
+        total_words += len(words)
+        hp_in_sent = 0
+        hp_words_in_sent = []
+        
+        for w in words:
+            clean_w = re.sub(r'[^\w]', '', w).lower()
+            if clean_w in _HIGH_PROB_FLAT:
+                hp_in_sent += 1
+                hp_words_in_sent.append(w)
+        
+        high_prob_count += hp_in_sent
+        high_prob_found.extend(hp_words_in_sent)
+        
+        # Calculate AI-likelihood score for this sentence
+        # (Based on high probability word density and word count)
+        score = (hp_in_sent / len(words)) if words else 0
+        sentence_stats.append((i, score, sent))
+
+    # Sort hotspots by score (descending)
+    hotspots = sorted(sentence_stats, key=lambda x: x[1], reverse=True)
+    
     burst = burstiness_score(sentences)
-    hp_count, hp_words = count_high_prob_words(text)
-    connectors = detect_gpt_connectors(text)
-    hotspots = sentence_hotspots(sentences)
-
-    # Rough verdict
-    ai_signals = 0
-    if burst < 0.35:
-        ai_signals += 1
-    if hp_count > 5:
-        ai_signals += 1
-    if len(connectors) >= 2:
-        ai_signals += 1
-
-    if ai_signals == 0:
-        verdict = "CLEAN — Minimal AI signals detected."
-    elif ai_signals == 1:
-        verdict = "LOW RISK — A few AI patterns present."
-    elif ai_signals == 2:
-        verdict = "MEDIUM RISK — Detectors may flag this."
-    else:
-        verdict = "HIGH RISK — Strong AI signals. Run all passes."
+    
+    # Heuristic verdict
+    verdict = "HUMAN"
+    if burst < 0.3 or (high_prob_count / max(total_words, 1)) > 0.2:
+        verdict = "LIKELY AI"
+    elif burst < 0.5:
+        verdict = "MIXED"
 
     return {
-        "burstiness": burst,
-        "high_prob_count": hp_count,
-        "high_prob_words": hp_words,
-        "gpt_connectors": connectors,
-        "hotspots": hotspots,
-        "sentences": sentences,
         "verdict": verdict,
+        "burstiness": burst,
+        "high_prob_count": high_prob_count,
+        "high_prob_words": list(set(high_prob_found)),
+        "gpt_connectors": gpt_connectors_found,
+        "hotspots": hotspots
     }

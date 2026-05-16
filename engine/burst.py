@@ -24,6 +24,16 @@ _MERGE_CONJUNCTIONS = [
     ", and yet",
     "; in turn,",
     "— that is,",
+    "; furthermore,",
+    "; moreover,",
+    ", a point that suggests",
+    "— an outcome that means",
+    "; hence,",
+    "; naturally,",
+    "— indeed,",
+    "; accordingly,",
+    ", suggesting that",
+    ", ultimately meaning",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,6 +50,15 @@ _SPLIT_MARKERS = [
     r'\bwhile\b',
     r'\bwhereas\b',
     r'\bso that\b',
+    r'\bhowever\b',
+    r'\bmoreover\b',
+    r'\bfurthermore\b',
+    r'\bsince\b',
+    r'\bgiven that\b',
+    r'\bprovided that\b',
+    r'\beven though\b',
+    r'\bbut\b',
+    r'\bas\b',
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -73,12 +92,28 @@ def _find_split_point(sentence: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _merge_pair(s1: str, s2: str, rng: random.Random) -> str:
+def _get_core_phrase(conj: str) -> str:
+    import re
+    return re.sub(r'[^\w\s]', '', conj).strip().lower()
+
+def _merge_pair(s1: str, s2: str, rng: random.Random, draft_text: str = "") -> str:
     """
     Merge two sentences into one using a random conjunction.
+    Filters out conjunctions that appear > 10 times in the draft to prevent repetition.
     Strips the period from s1.
     """
-    conj = rng.choice(_MERGE_CONJUNCTIONS)
+    valid_conjs = _MERGE_CONJUNCTIONS
+    if draft_text:
+        draft_text_lower = draft_text.lower()
+        filtered = []
+        for conj in _MERGE_CONJUNCTIONS:
+            core = _get_core_phrase(conj)
+            if draft_text_lower.count(core) <= 10:
+                filtered.append(conj)
+        if filtered:
+            valid_conjs = filtered
+
+    conj = rng.choice(valid_conjs)
     s1_clean = s1.rstrip(".!?")
     s2_clean = s2[0].lower() + s2[1:] if s2 else s2
     return f"{s1_clean}{conj} {s2_clean}"
@@ -133,7 +168,8 @@ def find_burst_candidates(sentences: List[str], window: int = 4) -> List[Tuple[s
 
 def apply_merge(sentences: List[str], index: int, rng: random.Random) -> List[str]:
     """Apply merge of sentences[index] and sentences[index+1]."""
-    merged = _merge_pair(sentences[index], sentences[index + 1], rng)
+    draft_text = " ".join(sentences)
+    merged = _merge_pair(sentences[index], sentences[index + 1], rng, draft_text)
     return sentences[:index] + [merged] + sentences[index + 2:]
 
 
@@ -148,7 +184,8 @@ def apply_split(sentences: List[str], index: int) -> List[str]:
 
 def preview_merge(sentences: List[str], index: int, rng: random.Random) -> str:
     """Return a preview of what the merged sentence would look like."""
-    return _merge_pair(sentences[index], sentences[index + 1], rng)
+    draft_text = " ".join(sentences)
+    return _merge_pair(sentences[index], sentences[index + 1], rng, draft_text)
 
 
 def preview_split(sentences: List[str], index: int) -> Optional[Tuple[str, str]]:

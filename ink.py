@@ -6,6 +6,8 @@ linguistic perturbation. Designed like pandoc: pipe-friendly, composable.
 
 Usage:
   ink -i draft.md --passes burst,syn,voice
+  ink -i draft.md --deep                    # Advanced NLTK analysis
+  ink --purge                               # Remove all NLTK data (~40MB)
   cat draft.md | ink --passes syn --seed 42 > out.md
 
 Passes:
@@ -22,14 +24,12 @@ Flags:
   -b, --batch     Batch mode: generate N versions (see --count)
   --count         Number of batch variants (default: 3)
   --analyze       Print analysis report and exit (no changes made)
+  --deep          Run advanced NLTK analysis (N-Gram, TTR, Hedge Detection)
   --clear-state   Clear session state for this file and exit
+  --ephemeral     Run without writing session state to disk
+  --purge         Remove all NLTK data packages from your machine (~40MB)
   --interactive   (Default) Run the interactive change loop
   --limit         Split output into chunks of N words
-
-Batch Mode (Option B — documented):
-  ink -i draft.md --batch --count 5
-  Generates draft_v1_entropy_low.md ... draft_v5_entropy_high.md
-  Each uses a different seed. User manually checks which version passes.
 """
 
 import sys
@@ -37,15 +37,17 @@ import os
 import argparse
 import random
 import re
-
 import shutil
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependency check
+# ─────────────────────────────────────────────────────────────────────────────
 
 def check_dependencies():
     """Verify that external dependencies like Pandoc are installed."""
     if not shutil.which("pandoc"):
-        print(c("  Warning: 'pandoc' not found in PATH.", YELLOW))
-        print(c("  Pandoc is required for handling certain document formats and final clean-ups.", DIM))
-        print(c("  Install it via: brew install pandoc (macOS) or apt install pandoc (Linux)\n", DIM))
+        # Just a warning, as standard text processing still works
+        pass
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Engine imports
@@ -54,6 +56,7 @@ def check_dependencies():
 sys.path.insert(0, os.path.dirname(__file__))
 
 from engine import analyzer, burst, syn_fuzz, voice, state
+from engine import deep_analyze as _deep_mod
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ANSI colors (gracefully degraded if not supported)
@@ -167,6 +170,60 @@ def print_analysis(report: dict):
             print(f'  [{idx+1}] score={score:.2f}  "{display}"')
     print()
 
+
+def print_deep_report(report: dict):
+    print(c("\n  ── Deep Analysis Report (NLTK) ──", BOLD))
+    comp = report["composite_ai_score"]
+    color = RED if comp > 0.5 else (YELLOW if comp > 0.25 else GREEN)
+    print(f"  Composite AI Score : {c(str(comp), color)} (0.0=Human, 1.0=AI)")
+
+    lex = report["lexical_diversity"]
+    print(f"  Lexical Diversity  : TTR={lex['ttr']} ({lex['unique_lemmas']} unique / {lex['total_tokens']} tokens)")
+    if lex["overused_lemmas"]:
+        overused_str = ", ".join(f"{w}({n})" for w, n in lex["overused_lemmas"][:6])
+        print(f"  Overused Lemmas    : {c(overused_str, RED)}")
+
+    perp = report["perplexity"]
+    print(f"  Predictability     : mean={perp['mean_predictability']} (high = AI-like)")
+    if perp["hotspots"]:
+        print(c("\n  ── Most Predictable Sentences ──", DIM))
+        for idx, score, sent in perp["hotspots"][:3]:
+            display = (sent[:80] + "...") if len(sent) > 80 else sent
+            print(f'  [{idx+1}] score={score:.3f}  "{display}"')
+
+    hedges = report["hedge_targets"]
+    if hedges:
+        print(c(f"\n  ── Hedge Injection Targets ({len(hedges)} found) ──", DIM))
+        for h in hedges[:3]:
+            print(f"  Sentence [{h['sentence_idx']+1}]: inject '{c(h['hedge_suggestion'], GREEN)}' before '{h['inject_before_word']}'")
+            display = (h['preview'][:100] + "...") if len(h['preview']) > 100 else h['preview']
+            print(f"  Preview: {c(display, DIM)}")
+    print()
+
+
+def purge_nltk_data():
+    """Removes all NLTK data packages from ~/nltk_data."""
+    import nltk
+    nltk_path = nltk.data.path[0] if nltk.data.path else None
+    if not nltk_path:
+        nltk_path = os.path.join(os.path.expanduser("~"), "nltk_data")
+
+    if os.path.exists(nltk_path):
+        import shutil as _shutil
+        size_mb = sum(
+            f.stat().st_size for f in os.scandir(nltk_path)
+            if f.is_file()
+        ) / (1024 * 1024)
+        print(c(f"  Found NLTK data at: {nltk_path} (~{size_mb:.1f} MB)", YELLOW))
+        confirm = input("  Permanently delete all NLTK data? [y/N]: ").strip().lower()
+        if confirm == "y":
+            _shutil.rmtree(nltk_path)
+            print(c("  ✓ NLTK data purged successfully.", GREEN))
+        else:
+            print(c("  Purge cancelled.", DIM))
+    else:
+        print(c("  No NLTK data found. Nothing to purge.", DIM))
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Interactive loop
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,12 +231,13 @@ def print_analysis(report: dict):
 CANONICAL_PASS_ORDER = ["burst", "syn", "voice"]
 
 def run_interactive(text: str, passes: list, rng: random.Random,
-                    source_path: str, target: str) -> str:
+                    source_path: str, target: str, ephemeral: bool = False) -> str:
     """
     Main interactive loop. Presents proposed changes one at a time.
     User responds with: [A]pply, [S]kip, [R]etry, [Q]uit
+    If ephemeral=True, session state is never written to disk.
     """
-    sess = state.load_state(source_path)
+    sess = state.load_state(source_path) if not ephemeral else {}
     # Split while preserving original whitespace delimiters
     sentences = analyzer.split_sentences(text)
     total_changes = 0
@@ -202,9 +260,12 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                 if idx >= len(sentences):
                     continue
 
-                print(c(f"\n  [{action.upper()}] {description}", CYAN))
-
                 if action == "merge" and idx + 1 < len(sentences):
+                    # PARAGRAPH PROTECTION: Never merge across a double newline (paragraph break)
+                    if "\n\n" in sentences[idx][1]:
+                        continue
+                    
+                    print(c(f"\n  [{action.upper()}] {description}", CYAN))
                     preview = burst.preview_merge([s for s, d in sentences], idx, rng)
                     print(f"  {c('Original:', DIM)} {sentences[idx][0]}")
                     print(f"            {sentences[idx+1][0]}")
@@ -213,12 +274,15 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                 elif action == "split":
                     result = burst.preview_split([s for s, d in sentences], idx)
                     if result is None:
-                        print(c("  (Could not find a clean split point — skipping)", DIM))
                         continue
+                    
+                    print(c(f"\n  [{action.upper()}] {description}", CYAN))
                     p1, p2 = result
                     print(f"  {c('Original:', DIM)} {sentences[idx][0]}")
                     print(f"  {c('Proposed:', GREEN)} {p1}")
                     print(f"            {p2}")
+                else:
+                    continue
 
                 print(c("  >> [A]pply  [S]kip  [R]etry  [Q]uit : ", YELLOW), end="", flush=True)
                 ch = prompt_user("")
@@ -228,14 +292,10 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                     return "".join([s + d for s, d in sentences])
                 elif ch == 'a':
                     if action == "merge" and idx + 1 < len(sentences):
-                        # Use the preview directly
-                        # The delimiter after the second sentence (idx+1) is preserved.
                         sentences[idx] = (preview, sentences[idx+1][1])
                         sentences.pop(idx + 1)
                     elif action == "split":
-                        # result is (part1, part2)
                         p1, p2 = result
-                        # The original delimiter for the whole sentence is kept with p2
                         orig_delim = sentences[idx][1]
                         sentences[idx] = (p1, " ")
                         sentences.insert(idx + 1, (p2, orig_delim))
@@ -244,7 +304,6 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                     total_changes += 1
                     print(c("  ✓ Applied.", GREEN))
                 elif ch == 'r':
-                    # Retry with a fresh RNG pull
                     if action == "merge" and idx + 1 < len(sentences):
                         new_preview = burst.preview_merge([s for s, d in sentences], idx, rng)
                         print(f"  {c('Retry:', YELLOW)} {new_preview}")
@@ -257,17 +316,15 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                             print(c("  ✓ Applied.", GREEN))
                     else:
                         print(c("  (Retry not available for split — skipping)", DIM))
-                else:  # 's' or anything else
+                else:
                     state.record_skip(sess, f"burst_{idx}")
                     print(c("  Skipped.", DIM))
 
         elif pass_name == "syn":
-            # Reconstruct text for analysis
             full_text = "".join([s + d for s, d in sentences])
             report = analyzer.analyze(full_text)
             hotspots = report["hotspots"]
             
-            # Propose connector replacements
             connector_cands = syn_fuzz.find_connector_candidates(full_text)
             for phrase, replacements in connector_cands[:3]:
                 if state.is_token_skipped(sess, phrase):
@@ -290,7 +347,6 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                     state.record_skip(sess, phrase)
                     print(c("  Skipped.", DIM))
 
-            # Word-level swaps on hotspot sentences
             for idx, score, _ in hotspots:
                 if idx >= len(sentences):
                     continue
@@ -346,10 +402,8 @@ def run_interactive(text: str, passes: list, rng: random.Random,
         elif pass_name == "voice":
             candidates = voice.find_voice_candidates([s for s, d in sentences], rng)
             if not candidates:
-                print(c("  No voice injection candidates found.", DIM))
                 continue
 
-            # Sort candidates by index (descending) to handle bridge insertions safely
             candidates.sort(key=lambda x: x[0], reverse=True)
 
             for idx, action, preview in candidates:
@@ -367,10 +421,8 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                     return "".join([s + d for s, d in sentences])
                 elif ch == 'a':
                     if action == "bridge":
-                        # preview is the bridge sentence itself
                         sentences.insert(idx, (preview, "\n\n"))
                     else:
-                        # preview is the fully transformed sentence
                         sentences[idx] = (preview, sentences[idx][1])
                     
                     state.record_sentence_fuzzed(sess, idx)
@@ -379,24 +431,22 @@ def run_interactive(text: str, passes: list, rng: random.Random,
                 else:
                     print(c("  Skipped.", DIM))
 
-    state.save_state(source_path, sess)
+    if not ephemeral:
+        state.save_state(source_path, sess)
+    else:
+        print(c("  [ephemeral] Session state not written to disk.", DIM))
     print(c(f"\n  ── Session complete. {total_changes} change(s) applied. ──", BOLD))
-    state.print_state_summary(sess)
-    # Perfect reconstruction using preserved delimiters
+    if not ephemeral:
+        state.print_state_summary(sess)
     return "".join([s + d for s, d in sentences])
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Batch mode (Option B — documented)
+# Batch mode
 # ─────────────────────────────────────────────────────────────────────────────
 
 ENTROPY_LABELS = ["entropy_minimal", "entropy_low", "entropy_med", "entropy_high", "entropy_max"]
 
 def run_batch(text: str, passes: list, count: int, source_path: str):
-    """
-    Generate `count` variants of the document, each with a different seed.
-    Applies all passes automatically (no user interaction).
-    Output: draft_v1_entropy_low.md ... draft_vN.md
-    """
     base = os.path.splitext(source_path)[0] if source_path != "-" else "draft"
     print(c(f"\n  ── Batch Mode: generating {count} variants ──", BOLD))
 
@@ -406,18 +456,18 @@ def run_batch(text: str, passes: list, count: int, source_path: str):
         label = ENTROPY_LABELS[min(i, len(ENTROPY_LABELS)-1)]
         out_path = f"{base}_v{i+1}_{label}.md"
 
-        # Auto-apply all passes silently
         sentences = analyzer.split_sentences(text)
 
         if "burst" in passes:
             candidates = burst.find_burst_candidates([s for s, d in sentences])
-            # Process in reverse to keep indices stable for splits/merges
             candidates.sort(key=lambda x: x[1], reverse=True)
             for action, idx, _ in candidates:
                 if idx >= len(sentences):
                     continue
                 if action == "merge" and idx + 1 < len(sentences):
-                    # Preview is the merged string
+                    # PARAGRAPH PROTECTION
+                    if "\n\n" in sentences[idx][1]:
+                        continue
                     merged = burst.preview_merge([s for s, d in sentences], idx, rng)
                     sentences[idx] = (merged, sentences[idx+1][1])
                     sentences.pop(idx + 1)
@@ -454,9 +504,6 @@ def run_batch(text: str, passes: list, count: int, source_path: str):
 
         output = "".join([s + d for s, d in sentences])
         write_output(out_path, output)
-        print(c(f"  [{i+1}/{count}] Seed={seed} → {out_path}", GREEN))
-
-    print(c(f"\n  Done. Run each variant through your detector manually.", CYAN))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI entry point
@@ -466,84 +513,87 @@ def main():
     check_dependencies()
     parser = argparse.ArgumentParser(
         prog="ink",
-        description="ink — Stealth Text Fuzzer. Bypass AI text detectors via adversarial linguistic perturbation.",
+        description="ink — Stealth Text Fuzzer. Bypass AI text detectors.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("-i", "--input",   default="-",  help="Input file path (default: stdin)")
-    parser.add_argument("-o", "--output",  default=None, help="Output file path (default: stdout)")
-    parser.add_argument("-p", "--passes",  default="burst,syn,voice", help="Comma-separated passes")
-    parser.add_argument("-t", "--target",  default="hardened", choices=["hardened", "simple"], help="Detection target")
-    parser.add_argument("-s", "--seed",    type=int, default=None, help="Random seed")
-    parser.add_argument("-b", "--batch",   action="store_true", help="Enable batch mode")
-    parser.add_argument("--count",         type=int, default=3, help="Number of batch variants")
-    parser.add_argument("--analyze",       action="store_true", help="Print analysis report and exit")
-    parser.add_argument("--clear-state",   action="store_true", help="Clear session state for input file")
-    parser.add_argument("--limit",         type=int, default=None, help="Split output into chunks of N words")
+    parser.add_argument("-i", "--input",   default="-",  help="Input file path")
+    parser.add_argument("-o", "--output",  default=None, help="Output file path")
+    parser.add_argument("-p", "--passes",  default="burst,syn,voice", help="Passes")
+    parser.add_argument("-t", "--target",  default="hardened", choices=["hardened", "simple"])
+    parser.add_argument("-s", "--seed",    type=int, default=None)
+    parser.add_argument("-b", "--batch",   action="store_true")
+    parser.add_argument("--count",         type=int, default=3)
+    parser.add_argument("--analyze",       action="store_true")
+    parser.add_argument("--deep",          action="store_true", help="Advanced NLTK analysis")
+    parser.add_argument("--clear-state",   action="store_true")
+    parser.add_argument("--ephemeral",     action="store_true", help="Do not write session state to disk")
+    parser.add_argument("--purge",         action="store_true", help="Remove all NLTK data from machine")
+    parser.add_argument("--limit",         type=int, default=None)
     args = parser.parse_args()
 
     print_banner()
 
-    # ── Read input ──
+    # ── Purge ──
+    if args.purge:
+        try:
+            import nltk as _nltk_chk  # noqa: F401
+            purge_nltk_data()
+        except ImportError:
+            print(c("  nltk is not installed. Nothing to purge.", DIM))
+        sys.exit(0)
+
     source_path = args.input if args.input != "-" else "-"
     text = read_input(source_path)
     if not text.strip():
-        print(c("  Error: Empty input.", RED))
         sys.exit(1)
 
-    # ── Clear state ──
     if args.clear_state:
         state.clear_state(source_path)
-        print(c(f"  Session state cleared for: {source_path}", GREEN))
         sys.exit(0)
 
-    # ── Analysis only ──
     if args.analyze:
         report = analyzer.analyze(text)
         print_analysis(report)
         sys.exit(0)
 
-    # ── Parse passes ──
+    # ── Deep analysis mode ──
+    if args.deep:
+        if _deep_mod.bootstrap_nltk():
+            deep_report = _deep_mod.deep_analyze(text, rng=None)
+            print_deep_report(deep_report)
+        else:
+            print(c("  Could not load NLTK. Install with: pip install nltk", RED))
+        sys.exit(0)
+
     passes = [p.strip() for p in args.passes.split(",") if p.strip()]
     valid_passes = {"burst", "syn", "voice"}
     passes = [p for p in passes if p in valid_passes]
     
     if not passes and not args.limit:
-        print(c("  Error: No valid passes specified. Use: burst, syn, voice (or just use --limit to split)", RED))
         sys.exit(1)
 
-    # In 'hardened' mode, remove 'glitch' if someone added it
     if args.target == "hardened" and "glitch" in passes:
         passes.remove("glitch")
-        print(c("  [hardened mode] 'glitch' pass disabled (Turnitin normalizes Unicode).", YELLOW))
 
-    # ── RNG setup ──
     seed = args.seed if args.seed is not None else random.randint(0, 99999)
     rng = random.Random(seed)
-    print(c(f"  Seed: {seed}  |  Target: {args.target}  |  Passes: {', '.join(passes)}", DIM))
-
-    # ── Run analysis first as a pre-flight ──
+    
     report = analyzer.analyze(text)
     print_analysis(report)
 
-    # ── Batch mode ──
     if args.batch:
         run_batch(text, passes, args.count, source_path)
         return
 
-    # ── Interactive mode ──
-    output_text = run_interactive(text, passes, rng, source_path, args.target)
+    output_text = run_interactive(text, passes, rng, source_path, args.target,
+                                  ephemeral=args.ephemeral)
 
-    # ── Write output ──
-    # Always resolve to a canonical _inked.md path so that running the tool
-    # multiple times on the same document (or its _inked output) accumulates
-    # all changes in ONE file instead of creating _inked_inked_inked.md chains.
     if args.output:
         out_path = args.output
     elif source_path == "-":
         out_path = None
     else:
         base = os.path.splitext(source_path)[0]
-        # Strip any trailing _inked suffixes so we always write to <base>_inked.md
         while base.endswith("_inked"):
             base = base[: -len("_inked")]
         out_path = base + "_inked.md"
@@ -553,7 +603,6 @@ def main():
         if len(chunks) > 1:
             base_out = os.path.splitext(out_path)[0]
             ext = os.path.splitext(out_path)[1]
-            print(c(f"\n  ── Splitting into {len(chunks)} parts (limit: {args.limit} words) ──", BOLD))
             for i, chunk in enumerate(chunks):
                 chunk_path = f"{base_out}_part{i+1}{ext}"
                 write_output(chunk_path, chunk)

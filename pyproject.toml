@@ -20,6 +20,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+# Install with: pip install ink-fuzzer[deep]  or  pip install .[deep]
+deep = ["nltk>=3.8"]
+
 [project.scripts]
 ink = "ink:main"
 
